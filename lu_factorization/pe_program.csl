@@ -1,0 +1,119 @@
+param memcpy_params: comptime_struct;
+
+// Matrix dimensions
+param M: u16;
+param N: u16;
+
+// Colors
+param from_diagonal_to_x_color: color; // sends data horizontally from diagonal to the row, to indicate that sends their values to south for elimination step
+param from_non_diagonal_to_x_color: color; // sends data horizontally used for the elimination step
+param from_diagonal_to_y_color: color; // sends data vertically to do the division step
+param from_non_diagonal_to_y_color: color; // sends data vertically used for the elimination step
+
+// Tasks IDs
+param send_self_to_south_task_id: data_task_id;
+param recv_elimination_from_north_task_id: data_task_id;
+param recv_elimination_from_west_task_id: data_task_id;
+param division_step_task_id: data_task_id;
+
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const layout_mod = @import_module("<layout>");
+
+var element: [1]f32;
+var element_ptr: [*]f32 = &element;
+
+fn is_bottom_row() bool {
+  return(layout_mod.get_y_coord() == M);
+}
+
+fn is_right_col() bool {
+  return(layout_mod.get_x_coord() == N);
+}
+
+fn is_diagonal_element() bool {
+  return(layout_mod.get_x_coord() == layout_mod.get_y_coord());
+}
+
+const out_dsd_south_elimination = @get_dsd(fabout_dsd, .{
+                      .fabric_color = from_non_diagonal_to_y_color, .extent = 1,
+                      .output_queue = @get_output_queue(0)
+                    });
+const out_dsd_south_division = @get_dsd(fabout_dsd, .{
+                      .fabric_color = from_diagonal_to_y_color, .extent = 1,
+                      .output_queue = @get_output_queue(1)
+                    });
+
+const out_dsd_east_signal = @get_dsd(fabout_dsd, .{
+                      .fabric_color = from_diagonal_to_x_color, .extent = 1,
+                      .output_queue = @get_output_queue(2)
+                    });
+
+const out_dsd_east_elimination = @get_dsd(fabout_dsd, .{
+                      .fabric_color = from_non_diagonal_to_x_color, .extent = 1,
+                      .output_queue = @get_output_queue(3)
+                    });
+
+task send_self_to_south(signal: f32) void {
+  @fmovs(out_dsd_south_elimination, element[0]);
+  sys_mod.unblock_cmd_stream();
+}
+
+var elimination_count: u16 = 0;
+var aux1: f32 = 0.0;
+var aux2: f32 = 0.0;
+
+fn elimination_step() void {
+  element[0] -= aux1*aux2;
+  if (elimination_count/2 == layout_mod.get_x_coord()) {
+    if (is_diagonal_element() and !is_right_col()) {
+      @fmovs(out_dsd_east_signal, element[0]);
+      @fmovs(out_dsd_south_division, element[0]);
+    }
+    @unblock(recv_elimination_from_north_task_id);
+    @unblock(recv_elimination_from_west_task_id);
+    sys_mod.unblock_cmd_stream();
+  }
+  @unblock(recv_elimination_from_north_task_id);
+  @unblock(recv_elimination_from_west_task_id);
+}
+
+task recv_elimination_from_north(value: f32) void {
+  @block(recv_elimination_from_north_task_id);
+  aux1 = value;
+  elimination_count += 1;
+  if (elimination_count % 2 == 0) {
+    elimination_step();
+  }
+}
+
+task recv_elimination_from_west(value: f32) void {
+  @block(recv_elimination_from_west_task_id);
+  aux2 = value;
+  elimination_count += 1;
+  if (elimination_count % 2 == 0) {
+    elimination_step();
+  }
+}
+
+task division_step (value: f32) void {
+  element[0] /= value;
+  @fmovs(out_dsd_east_elimination, element[0]);
+  sys_mod.unblock_cmd_stream();
+}
+
+fn start() void {
+  if (is_diagonal_element() and layout_mod.get_y_coord() == 0) {
+    elimination_step();
+  }
+}
+
+comptime {
+  @bind_data_task(send_self_to_south, send_self_to_south_task_id);
+  @bind_data_task(recv_elimination_from_north, recv_elimination_from_north_task_id);
+  @bind_data_task(recv_elimination_from_west, recv_elimination_from_west_task_id);
+  @bind_data_task(division_step, division_step_task_id);
+
+  @export_symbol(element_ptr, "element");
+  @export_symbol(start);
+  @rpc(@get_data_task_id(sys_mod.LAUNCH));
+}

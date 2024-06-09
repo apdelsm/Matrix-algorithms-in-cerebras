@@ -1,0 +1,74 @@
+// total matrix dimensions
+param M: i16;
+param N: i16;
+
+// Colors
+const from_diagonal_to_x_color: color = @get_color(0);
+const from_non_diagonal_to_x_color: color = @get_color(1);
+const from_diagonal_to_y_color: color = @get_color(2);
+const from_non_diagonal_to_y_color: color = @get_color(3);
+const LAUNCH: color = @get_color(8); // Color used by memcpy for kernel launch
+
+
+// Task IDs
+const send_self_to_south_task_id: data_task_id = @get_data_task_id(from_diagonal_to_x_color);
+const recv_elimination_from_north_task_id: data_task_id = @get_data_task_id(from_non_diagonal_to_y_color);
+const recv_elimination_from_west_task_id: data_task_id = @get_data_task_id(from_non_diagonal_to_x_color);
+const division_step_task_id: data_task_id = @get_data_task_id(from_diagonal_to_y_color);
+
+
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = N,
+  .height = M,
+  .LAUNCH = LAUNCH
+});
+
+layout {
+  // PE coordinates are (column, row)
+  @set_rectangle(N, M);
+
+  for (@range(i16, N)) |pe_x| {
+    for (@range(i16, M)) |pe_y| {
+      @set_tile_code(pe_x, pe_y, "pe_program.csl", .{
+        .memcpy_params = memcpy.get_params(pe_x),
+        .M = M,
+        .N = N,
+        .from_diagonal_to_x_color = from_diagonal_to_x_color,
+        .from_non_diagonal_to_x_color = from_non_diagonal_to_x_color,
+        .from_diagonal_to_y_color = from_diagonal_to_y_color,
+        .from_non_diagonal_to_y_color = from_non_diagonal_to_y_color,
+        .send_self_to_south_task_id = send_self_to_south_task_id,
+        .recv_elimination_from_north_task_id = recv_elimination_from_north_task_id,
+        .recv_elimination_from_west_task_id = recv_elimination_from_west_task_id,
+        .division_step_task_id = division_step_task_id
+      });
+      const RX_W_TX_RE_or_R = .{ .rx = .{WEST}, .tx = if (pe_x < N - 1) .{RAMP, EAST} else .{RAMP}};
+      const RX_N_TX_RS_or_R = .{ .rx = .{NORTH}, .tx = if (pe_y < M - 1) .{RAMP, SOUTH} else .{RAMP}};
+      const RX_RW_TX_RE_or_R = .{ .rx = .{RAMP, WEST}, .tx = if (pe_x < N - 1) .{RAMP, EAST} else .{RAMP}};
+      const RX_RN_TX_RS_or_R = .{ .rx = .{RAMP, NORTH}, .tx = if (pe_y < M - 1) .{RAMP, SOUTH} else .{RAMP}};
+
+      if (pe_x == pe_y) {
+        @set_color_config(pe_x, pe_y, from_diagonal_to_x_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{EAST}}});
+        @set_color_config(pe_x, pe_y, from_diagonal_to_y_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{SOUTH}}});
+        @set_color_config(pe_x, pe_y, from_non_diagonal_to_x_color, .{.routes = RX_W_TX_RE_or_R});
+        @set_color_config(pe_x, pe_y, from_non_diagonal_to_y_color, .{.routes = RX_N_TX_RS_or_R});
+      }
+      else {
+        @set_color_config(pe_x, pe_y, from_diagonal_to_x_color, .{.routes = RX_W_TX_RE_or_R});
+        @set_color_config(pe_x, pe_y, from_diagonal_to_y_color, .{.routes = RX_N_TX_RS_or_R});
+        @set_color_config(pe_x, pe_y, from_non_diagonal_to_x_color, .{
+          .routes = RX_RW_TX_RE_or_R,
+          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_x + 1, .max_counter = pe_x}
+          });
+        @set_color_config(pe_x, pe_y, from_non_diagonal_to_y_color, .{
+          .routes = RX_RN_TX_RS_or_R,
+          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_y + 1, .max_counter = pe_y}
+        });
+      }
+    }
+  }
+
+  // export symbol names
+  @export_name("element", [*]f32, true);
+  @export_name("start", fn()void);
+}
