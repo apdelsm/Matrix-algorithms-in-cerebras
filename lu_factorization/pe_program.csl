@@ -22,12 +22,8 @@ const layout_mod = @import_module("<layout>");
 var element: [1]f32;
 var element_ptr: [*]f32 = &element;
 
-fn is_bottom_row() bool {
-  return(layout_mod.get_y_coord() == M);
-}
-
 fn is_right_col() bool {
-  return(layout_mod.get_x_coord() == N);
+  return(layout_mod.get_x_coord() == N-1);
 }
 
 fn is_diagonal_element() bool {

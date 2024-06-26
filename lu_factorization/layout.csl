@@ -58,11 +58,11 @@ layout {
         @set_color_config(pe_x, pe_y, from_diagonal_to_y_color, .{.routes = RX_N_TX_RS_or_R});
         @set_color_config(pe_x, pe_y, from_non_diagonal_to_x_color, .{
           .routes = RX_RW_TX_RE_or_R,
-          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_x + 1, .max_counter = pe_x}
+          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_x + 1, .max_counter = pe_x, .init_counter=1}
           });
         @set_color_config(pe_x, pe_y, from_non_diagonal_to_y_color, .{
           .routes = RX_RN_TX_RS_or_R,
-          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_y + 1, .max_counter = pe_y}
+          .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_y + 1, .max_counter = pe_y, .init_counter=1}
         });
       }
     }
