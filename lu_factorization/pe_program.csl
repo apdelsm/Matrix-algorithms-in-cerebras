@@ -65,8 +65,6 @@ fn elimination_step() void {
       @fmovs(out_dsd_east_signal, element[0]);
       @fmovs(out_dsd_south_division, element[0]);
     }
-    @unblock(recv_elimination_from_north_task_id);
-    @unblock(recv_elimination_from_west_task_id);
     sys_mod.unblock_cmd_stream();
   }
   @unblock(recv_elimination_from_north_task_id);
