@@ -1,0 +1,116 @@
+// total matrix dimensions
+param M: i16;
+param N: i16;
+
+// Colors
+const A_color: color = @get_color(0);
+const zero_signal_color: color = @get_color(1);
+const sin_cos_horizontal_color: color = @get_color(2);
+const LAUNCH: color = @get_color(3); // Color used by memcpy for kernel launch
+
+// Task IDs
+const recv_A_task_id: data_task_id = @get_data_task_id(A_color);
+const recv_zero_task_id: data_task_id = @get_data_task_id(zero_signal_color);
+const recv_sin_cos_west_task_id: data_task_id = @get_data_task_id(sin_cos_horizontal_color);
+
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = N,
+  .height = M,
+  .LAUNCH = LAUNCH
+});
+
+layout {
+  // PE coordinates are (column, row)
+  @set_rectangle(N, M);
+  // routes
+  const RX_RNS_TX_R = .{ .rx = .{RAMP, NORTH, SOUTH}, .tx = .{RAMP}};
+  const RX_R_TX_E = .{ .rx = .{RAMP}, .tx = .{EAST}};
+  const RX_RW_TX_RE = .{ .rx = .{RAMP, WEST}, .tx = .{RAMP, EAST}};
+  const RX_W_TX_RE = .{ .rx = .{WEST}, .tx = .{RAMP, EAST}};
+  const RX_W_TX_R = .{ .rx = .{WEST}, .tx = .{RAMP}};
+  const RX_N_TX_R = .{ .rx = .{NORTH}, .tx = .{RAMP}};
+  const RX_RW_TX_R = .{ .rx = .{RAMP, NORTH, WEST}, .tx = .{RAMP}};
+  // switches
+  const switch_TX_N = .{.pos1 = .{ .tx = NORTH}, .ring_mode = true, .current_switch_pos = 1};
+  const switch_TX_S = .{.pos1 = .{ .tx = SOUTH}, .ring_mode = true, .current_switch_pos = 0};
+  const switch_TX_SNR = .{
+    .pos1 = .{ .tx = SOUTH},
+    .pos2 = .{ .tx = NORTH},
+    .pos3 = .{ .tx = RAMP},
+    .ring_mode = true,
+    .current_switch_pos = 0
+  };
+  const switch_TX_SE = .{
+    .pos1 = .{ .tx = SOUTH},
+    .pos2 = .{ .tx = EAST},
+    .ring_mode = false
+  };
+
+  for (@range(i16, N)) |pe_x| {
+    for (@range(i16, M)) |pe_y| {
+      @set_tile_code(pe_x, pe_y, "pe_program.csl", .{
+        .memcpy_params = memcpy.get_params(pe_x),
+        .M = M,
+        .N = N,
+        .A_color = A_color,
+        .zero_signal_color = zero_signal_color,
+        .sin_cos_horizontal_color = sin_cos_horizontal_color,
+        .recv_A_task_id = recv_A_task_id,
+        .recv_zero_task_id = recv_zero_task_id,
+        .recv_sin_cos_west_task_id = recv_sin_cos_west_task_id,
+      });
+
+      //config A_color
+      if (pe_y == (M - 1)) {
+        @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_N});
+      }
+      else if (pe_y == 0) {
+        @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_S});
+      }
+      else {
+        @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_SNR});
+      }
+
+      //config sin_cos_horizontal_color
+      if (pe_x == 0) {
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_R_TX_E});
+      }
+      else if (pe_x == N-1) {
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_R});
+      }
+      else {
+        if (pe_y == 0) {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_RE});
+        }
+        else if (pe_y == M-1) {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
+            .routes = RX_RW_TX_RE,
+            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = 2*pe_x + 1, .max_counter = 2*pe_x-1}
+          });
+        }
+        else {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
+            .routes = RX_RW_TX_RE,
+            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = 4*pe_x + 3, .max_counter = 4*pe_x - 1}
+          });
+        }
+      }
+
+      //config zero_signal_color
+      if (pe_y == M-1) {
+        @set_color_config(pe_x, pe_y, zero_signal_color, .{.routes = RX_N_TX_R});
+      }
+      else if (pe_y == M-2) {
+        if (pe_x == 0) {
+          @set_color_config(pe_x, pe_y, zero_signal_color, .{.routes = RX_R_TX_E});
+        } else {
+          @set_color_config(pe_x, pe_y, zero_signal_color, .{.routes = RX_RW_TX_R, .switches = switch_TX_SE});
+        }
+      }
+    }
+  }
+
+  // export symbol names
+  @export_name("R", [*]f32, true);
+  @export_name("start", fn()void);
+}

@@ -1,0 +1,208 @@
+param memcpy_params: comptime_struct;
+
+// Matrix dimensions
+param M: u16;
+param N: u16;
+
+// Colors
+param A_color: color;
+param zero_signal_color: color;
+param sin_cos_horizontal_color: color;
+
+// Tasks IDs
+param recv_A_task_id: data_task_id;
+param recv_zero_task_id: data_task_id;
+param recv_sin_cos_west_task_id: data_task_id;
+const exit_task_id: local_task_id = @get_local_task_id(10);
+
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const layout_mod = @import_module("<layout>");
+const math = @import_module("<math>");
+
+var R_element = [1] f32 {0.0};
+var R_element_ptr: [*]f32 = &R_element;
+
+var is_down_updated_row: bool;
+var cos: f32;
+var sin: f32;
+var tau: f32;
+var was_sin_cos_recvd_from_west: bool;
+var r_updates_limit: i32;
+
+const opcode_switch_advance = 1;
+
+// Helper function to construct the payload of the control wavelet.
+// args:
+//    ceFilter: a filter bit to disable transmission from the destination
+//              router to the destination CE,
+//    opcode: switching opcode (see comment above), and
+//    data: 16-bit wavelet data
+fn ctrl(ce_filter: bool, opcode: i16, color_id: u16) u32 {
+  return @as(u32, color_id) << 16 | @as(u32, opcode) << 22 | @as(u32, ce_filter) << 24;
+}
+
+fn is_bottom_row() bool {
+  return(layout_mod.get_y_coord() == M-1);
+}
+fn is_penultimate_row() bool {
+  return(layout_mod.get_y_coord() == M-2);
+}
+
+fn is_top_row() bool {
+  return(layout_mod.get_y_coord() == 0);
+}
+
+fn is_right_col() bool {
+  return(layout_mod.get_x_coord() == N-1);
+}
+
+fn is_left_col() bool {
+  return(layout_mod.get_x_coord() == 0);
+}
+
+fn is_diagonal_element() bool {
+  return(layout_mod.get_x_coord() == layout_mod.get_y_coord());
+}
+
+const out_dsd_A = @get_dsd(fabout_dsd, .{
+                          .fabric_color = A_color, .extent = 1,
+                          .output_queue = @get_output_queue(0)
+});
+const out_dsd_A_control = @get_dsd(fabout_dsd, .{
+                          .fabric_color = A_color, .extent = 1,
+                          .output_queue = @get_output_queue(0),
+                          .control = true
+});
+
+const out_dsd_zero_signal = @get_dsd(fabout_dsd, .{
+                          .fabric_color = zero_signal_color, .extent = 1,
+                          .output_queue = @get_output_queue(1),
+                          .control = true
+});
+
+const out_dsd_sin_cos_horizontally = @get_dsd(fabout_dsd, .{
+                          .fabric_color = sin_cos_horizontal_color, .extent = 1,
+                          .output_queue = @get_output_queue(5)
+});
+
+fn compute_sin_cos(a: f32, b:f32) void {
+  if (!was_sin_cos_recvd_from_west) {
+    if (b == 0.0) {
+      cos = 1.0;
+      sin = 0.0;
+      return;
+    }
+    if (math.abs(b) > math.abs(a)) {
+      tau = -a/b;
+      sin = 1.0/math.sqrt(1.0+tau*tau);
+      cos = sin*tau;
+      return;
+    }
+    tau = -b/a;
+    cos = 1.0/math.sqrt(1.0+tau*tau);
+    sin = cos*tau;
+  }
+}
+
+fn send_sin_cos_east(cos: f32, sin: f32) void {
+  if (!was_sin_cos_recvd_from_west and !is_right_col()) {
+    @fmovs(out_dsd_sin_cos_horizontally, sin);
+    @fmovs(out_dsd_sin_cos_horizontally, cos);
+  }
+}
+
+fn send_A() void {
+  @fmovs(out_dsd_A, R_element[0]);
+  @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
+}
+
+task recv_A(a: f32) void {
+  if (is_down_updated_row) {
+    compute_sin_cos(a, R_element[0]);
+    send_sin_cos_east(cos, sin);
+    R_element[0] = sin*a + cos*R_element[0];
+    if (is_penultimate_row() and !was_sin_cos_recvd_from_west and !is_right_col()) {
+      @mov32(out_dsd_zero_signal, comptime ctrl(false, opcode_switch_advance, @get_int(zero_signal_color)));
+    }
+  } else {
+    send_A();
+    compute_sin_cos(R_element[0], a);
+    send_sin_cos_east(cos, sin);
+    R_element[0] = cos*R_element[0] - sin*a;
+    if (!is_diagonal_element() and !was_sin_cos_recvd_from_west) {
+      send_A();
+    }
+  }
+  was_sin_cos_recvd_from_west = false;
+  if (!is_bottom_row() and !is_top_row()) {
+    is_down_updated_row = !is_down_updated_row;
+  }
+  r_updates_limit -= 1;
+  if (r_updates_limit == 0) {
+    @activate(exit_task_id);
+  }
+  @unblock(recv_zero_task_id);
+}
+
+task recv_sin_cos_west(value: f32) void {
+  @block(recv_zero_task_id);
+  if (was_sin_cos_recvd_from_west) {
+    cos = value;
+    if (is_down_updated_row) {
+      send_A();
+    }
+  }
+  else {
+    sin = value;
+    was_sin_cos_recvd_from_west = true;
+  }
+}
+
+task recv_zero_signal(zero: i16) void {
+  if (is_bottom_row()) {
+    send_A();
+  }
+  else {
+    @mov32(out_dsd_zero_signal, comptime ctrl(false, opcode_switch_advance, @get_int(zero_signal_color)));
+  }
+}
+
+task exit_task() void {
+  sys_mod.unblock_cmd_stream();
+}
+
+fn start() void {
+  is_down_updated_row = is_bottom_row();
+  was_sin_cos_recvd_from_west = false;
+  if (is_bottom_row()) {
+    if (is_diagonal_element()) {
+      r_updates_limit = @as(i32, layout_mod.get_x_coord());
+    }
+    else {
+      r_updates_limit = @as(i32, layout_mod.get_x_coord() + 1); 
+    }
+  }
+  else {
+    if (layout_mod.get_x_coord() >= layout_mod.get_y_coord()) {
+      r_updates_limit = @as(i32, layout_mod.get_y_coord()*2 + 1);
+    }
+    else {
+      r_updates_limit = @as(i32, (layout_mod.get_x_coord() + 1)*2);
+    }
+  }
+  
+  if (is_left_col() and is_bottom_row()) {
+    send_A();
+  }
+}
+
+comptime {
+  @bind_data_task(recv_A, recv_A_task_id);
+  @bind_data_task(recv_sin_cos_west, recv_sin_cos_west_task_id);
+  @bind_data_task(recv_zero_signal, recv_zero_task_id);
+  @bind_local_task(exit_task, exit_task_id);
+
+  @export_symbol(R_element_ptr, "R");
+  @export_symbol(start);
+  @rpc(@get_data_task_id(sys_mod.LAUNCH));
+}
