@@ -3,3 +3,4 @@ Parallel matrix algorithms in cerebras for my end of master work in Master's Deg
 
 Content:
 - [LU factorization](./lu_factorization/README.md)
+- [QR factorization](./QR_factorization/README.md)

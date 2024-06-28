@@ -1,7 +1,10 @@
 # LU factorization without pivoting
 
+<div style="text-align: justify">
 Here you can find the implementation for a matrix A in LU in cerebras. This implementation does not implement pivoting and also assumes one element per PE.
+<br/>
 The main idea is exposed in the next image, which describes the flow of the data in a 3x3 matrix, where colored arrows represent the communication channels used, if an arrow is thicker than others, it means that the channel is being used, emitting the data labeled near the arrow.
+<br/><br/>
 
 ![Alt text](./cerebras_lu.png "LU_cerebras")
 
@@ -12,3 +15,4 @@ The main idea is exposed in the next image, which describes the flow of the data
  - The red color is used horizontally in the elimination step, when a PE receives a value from this color, it stores it and performs the elimination if able.
 
 A PE is able to perform the elimination step when it has received both values necessary for it, one from the purple color (north) and one from the red color (west). After this, if the PE is in the diagonal and have been performed an amount of elimination steps equal to it column number (starting from 0), it will start a division step, sending self value to the south using the green color and will send a signal (self value in this case) to the east using the blue color.
+</div>
