@@ -1,7 +1,9 @@
 # LU factorization without pivoting
 
 <div style="text-align: justify">
-Here you can find the implementation for a matrix A in LU in cerebras. This implementation does not implement pivoting and also assumes one element per PE.
+Here you can find the implementation for a matrix A in LU in cerebras. This implementation does not implement pivoting.
+<br/>
+In this folder you can find two versions, one that works with one element per PE and another that works with many elements per PE. The main idea behind is the same for both although the second version has some changes due to the need to update the submatrix of the PE.
 <br/>
 The main idea is exposed in the next image, which describes the flow of the data in a 3x3 matrix, where colored arrows represent the communication channels used, if an arrow is thicker than others, it means that the channel is being used, emitting the data labeled near the arrow.
 <br/><br/>
