@@ -15,10 +15,10 @@ def reorganize_grid(arr, k):
   return result
 
 def inverse_reorganize_grid(flat_arr, k, n):
-  num_blocks = (n // k) ** 2
-  blocks = flat_arr.reshape(num_blocks, k, k)
-  reshaped = blocks.reshape(n // k, n // k, k, k)
-  transposed = reshaped.transpose(0, 2, 1, 3)
+  num_blocks = k*k
+  blocks = flat_arr.reshape(num_blocks, n//k, n//k)  
+  reshaped = blocks.reshape(k, k, n//k, n//k)
+  transposed = reshaped.transpose(0, 2, 1, 3)  
   result = transposed.reshape(n, n)
   return result
 
@@ -58,8 +58,6 @@ lu = np.zeros(shape=M*M, dtype=np.float32)
 runner.memcpy_d2h(lu, A_symbol, 0, 0, grid_size, grid_size, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
 runner.stop()
 
-lu = inverse_reorganize_grid(lu, grid_size, M)
-
 print("computing expected...")
 expected_lu = np.array(A, copy=True)
 for col in range(M):
@@ -69,5 +67,6 @@ for col in range(M):
     for row in range(col+1, M):
       expected_lu[row][col2] -= expected_lu[row][col]*expected_lu[col][col2]
 
+lu = inverse_reorganize_grid(lu, grid_size, M)
 print(f'Error: {np.linalg.norm(expected_lu-lu)}')
 
