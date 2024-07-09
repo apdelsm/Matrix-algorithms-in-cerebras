@@ -54,10 +54,6 @@ print("computing in device...")
 runner.memcpy_h2d(A_symbol, reorganize_grid(A, grid_size), 0, 0, grid_size, grid_size, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
 runner.launch('start', nonblock=False)
 
-lu = np.zeros(shape=M*M, dtype=np.float32)
-runner.memcpy_d2h(lu, A_symbol, 0, 0, grid_size, grid_size, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
-runner.stop()
-
 print("computing expected...")
 expected_lu = np.array(A, copy=True)
 for col in range(M):
@@ -66,6 +62,12 @@ for col in range(M):
   for col2 in range(col+1, M):
     for row in range(col+1, M):
       expected_lu[row][col2] -= expected_lu[row][col]*expected_lu[col][col2]
+print("expected computed, waiting device...")
+
+lu = np.zeros(shape=M*M, dtype=np.float32)
+runner.memcpy_d2h(lu, A_symbol, 0, 0, grid_size, grid_size, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
+runner.stop()
+print("compute in device finished.")
 
 lu = inverse_reorganize_grid(lu, grid_size, M)
 print(f'Error: {np.linalg.norm(expected_lu-lu)}')
