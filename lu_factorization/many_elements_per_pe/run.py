@@ -43,7 +43,7 @@ for i in range(M):
   A[i][i] = np.sum(A[i])
 
 # Construct a runner using SdkRuntime
-runner = SdkRuntime(args.name, cmaddr=args.cmaddr)
+runner = SdkRuntime(args.name, cmaddr=args.cmaddr, suppress_simfab_trace = True)
 
 # Get symbols
 A_symbol = runner.get_id('A')
