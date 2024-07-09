@@ -36,7 +36,7 @@ M = int(compile_data['params']['M'])
 
 #construct A
 A = np.array([random.random() for i in range(N*M)],  dtype=np.float32).reshape(M,N)
-#A = np.array([1,2,3,3,1,2,1,3,2,3,2,1], dtype=np.float32).reshape(M,N)
+
 # Construct a runner using SdkRuntime
 runner = SdkRuntime(args.name, cmaddr=args.cmaddr)
 
