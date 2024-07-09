@@ -1,0 +1,113 @@
+// total matrix dimensions
+param M: u32;
+param N: u32;
+param grid_height: u16;
+param grid_width: u16;
+
+// Colors
+const A_color: color = @get_color(0);
+const sin_cos_horizontal_color: color = @get_color(2);
+const LAUNCH: color = @get_color(3); // Color used by memcpy for kernel launch
+
+// Task IDs
+const send_control_task_id: data_task_id = @get_data_task_id(A_color);
+
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = grid_width,
+  .height = grid_height,
+  .LAUNCH = LAUNCH
+});
+
+layout {
+  // PE coordinates are (column, row)
+  @set_rectangle(grid_width, grid_height);
+  const N_per_pe: u16 = @as(u16, N/@as(u32, grid_width));
+  const M_per_pe: u16 = @as(u16, M/@as(u32, grid_height));
+  // routes
+  const RX_RNS_TX_R = .{ .rx = .{RAMP, NORTH, SOUTH}, .tx = .{RAMP}};
+  const RX_R_TX_E = .{ .rx = .{RAMP}, .tx = .{EAST}};
+  const RX_RW_TX_RE = .{ .rx = .{RAMP, WEST}, .tx = .{RAMP, EAST}};
+  const RX_W_TX_RE = .{ .rx = .{WEST}, .tx = .{RAMP, EAST}};
+  const RX_W_TX_R = .{ .rx = .{WEST}, .tx = .{RAMP}};
+  const RX_N_TX_R = .{ .rx = .{NORTH}, .tx = .{RAMP}};
+  const RX_RW_TX_R = .{ .rx = .{RAMP, NORTH, WEST}, .tx = .{RAMP}};
+  // switches
+  const switch_TX_N = .{.pos1 = .{ .tx = NORTH}, .ring_mode = true, .current_switch_pos = 1};
+  const switch_TX_S = .{.pos1 = .{ .tx = SOUTH}, .ring_mode = true, .current_switch_pos = 0};
+  const switch_TX_SNR = .{
+    .pos1 = .{ .tx = SOUTH},
+    .pos2 = .{ .tx = NORTH},
+    .pos3 = .{ .tx = RAMP},
+    .ring_mode = true,
+    .current_switch_pos = 0
+  };
+  const switch_TX_SE = .{
+    .pos1 = .{ .tx = SOUTH},
+    .pos2 = .{ .tx = EAST},
+    .ring_mode = false
+  };
+
+  for (@range(u16, grid_width)) |pe_x| {
+    for (@range(u16, grid_height)) |pe_y| {
+      @set_tile_code(pe_x, pe_y, "pe_program.csl", .{
+        .memcpy_params = memcpy.get_params(pe_x),
+        .M_per_pe = M_per_pe,
+        .N_per_pe = N_per_pe,
+        .grid_width = grid_width,
+        .grid_height = grid_height,
+        .A_color = A_color,
+        .sin_cos_horizontal_color = sin_cos_horizontal_color,
+        .send_control_task_id = send_control_task_id,
+      });
+
+      //config A_color
+      if (pe_y == (grid_height - 1)) {
+        @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_N});
+      }
+      else if (pe_y == 0) {
+        @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_S});
+      }
+      else {
+        if (pe_x == pe_y) {
+          @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_SNR});
+        }
+        else {
+          @set_color_config(pe_x, pe_y, A_color, .{.routes = RX_RNS_TX_R, .switches = switch_TX_SNR});
+        }
+      }
+
+      //config sin_cos_horizontal_color
+      if (pe_x == 0) {
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_R_TX_E});
+      }
+      else if (pe_x == grid_width-1) {
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_R});
+      }
+      else {
+        if (pe_y == 0) {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_RE});
+        }
+        else if (pe_y == grid_height-1) {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
+            .routes = RX_RW_TX_RE,
+            // A PE has pe_x PEs at left, each one send sine and cosine M_per_pe*M_per_pe times, the own PE send M_per_pe*M_per_pe sines and cosines 
+            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = 2*M_per_pe*M_per_pe*(pe_x + 1), .max_counter = 2*pe_x*M_per_pe*M_per_pe, .init_counter = 1}
+          });
+        }
+        else {
+          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
+            .routes = RX_RW_TX_RE,
+            // A PE has pe_x PEs at left, each one send sine and cosine M_per_pe*M_per_pe times plus M_per_pe derived by the exchange with the PE at south
+            // the own PE will send M_per_pe*M_per_pe sines and cosines plus M_per_pe derived by the exchange with the PE at south, if is diagonal PE will send less,
+            // so the limit will be the bigger amount because we are not really interested in return the counter to 0
+            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = (2*M_per_pe*pe_x + 2*M_per_pe)*(M_per_pe + 1), .max_counter = 2*M_per_pe*pe_x*(M_per_pe + 1), .init_counter = 1}
+          });
+        }
+      }
+    }
+  }
+
+  // export symbol names
+  @export_name("A", [*]f32, true);
+  @export_name("start", fn()void);
+}

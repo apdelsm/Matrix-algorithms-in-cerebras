@@ -1,0 +1,324 @@
+param memcpy_params: comptime_struct;
+
+// Matrix dimensions
+param M_per_pe: i16;
+param N_per_pe: i16;
+param grid_height: u16;
+param grid_width: u16;
+
+// Colors
+param A_color: color;
+param sin_cos_horizontal_color: color;
+
+// Tasks IDs
+param send_control_task_id: data_task_id;
+
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const layout_mod = @import_module("<layout>");
+const math = @import_module("<math>");
+
+var A: [M_per_pe*N_per_pe] f32;
+var A_ptr: [*]f32 = &A;
+var row_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> A[i]});
+
+var aux_row_1: [N_per_pe] f32;
+var aux_row_1_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> aux_row_1[i]});
+var aux_row_2: [N_per_pe] f32;
+var aux_row_2_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> aux_row_2[i]});
+
+var is_down_updated_row: bool;
+var cos: f32;
+var sin: f32;
+var tau: f32;
+var was_sin_cos_recvd_from_west: bool;
+var updates_limit: i32;
+var count: i16 = 0;
+var new_length: u16;
+
+const opcode_switch_advance = 1;
+
+fn ctrl(ce_filter: bool, opcode: i16, color_id: u16) u32 {
+  return @as(u32, color_id) << 16 | @as(u32, opcode) << 22 | @as(u32, ce_filter) << 24;
+}
+
+fn is_top_row() bool {
+  return(layout_mod.get_y_coord() == 0);
+}
+fn is_bottom_row() bool {
+  return(layout_mod.get_y_coord() == grid_height-1);
+}
+
+fn is_right_col() bool {
+  return(layout_mod.get_x_coord() == grid_width-1);
+}
+
+fn is_left_col() bool {
+  return(layout_mod.get_x_coord() == 0);
+}
+
+fn is_over_diagonal_pe() bool {
+  return(layout_mod.get_x_coord() > layout_mod.get_y_coord());
+}
+
+fn is_diagonal_pe() bool {
+  return(layout_mod.get_x_coord() == layout_mod.get_y_coord());
+}
+
+var out_dsd_A = @get_dsd(fabout_dsd, .{
+                          .fabric_color = A_color, .extent = N_per_pe,
+                          .output_queue = @get_output_queue(0)
+});
+var in_dsd_A = @get_dsd(fabin_dsd, .{
+                          .fabric_color = A_color, .extent = N_per_pe,
+                          .input_queue = @get_input_queue(0)
+});
+const out_dsd_A_control = @get_dsd(fabout_dsd, .{
+                          .fabric_color = A_color, .extent = 1,
+                          .output_queue = @get_output_queue(0),
+                          .control = true
+});
+
+const out_dsd_sin_cos_horizontally = @get_dsd(fabout_dsd, .{
+                          .fabric_color = sin_cos_horizontal_color, .extent = 1,
+                          .output_queue = @get_output_queue(2)
+});
+const in_dsd_sin_cos_horizontally = @get_dsd(fabin_dsd, .{
+                          .fabric_color = sin_cos_horizontal_color, .extent = 1,
+                          .input_queue = @get_input_queue(2)
+});
+
+fn compute_sin_cos(a: f32, b:f32) void {
+  if (!was_sin_cos_recvd_from_west) {
+    if (b == 0.0) {
+      cos = 1.0;
+      sin = 0.0;
+      return;
+    }
+    if (math.abs(b) > math.abs(a)) {
+      tau = -a/b;
+      sin = 1.0/math.sqrt(1.0+tau*tau);
+      cos = sin*tau;
+      return;
+    }
+    tau = -b/a;
+    cos = 1.0/math.sqrt(1.0+tau*tau);
+    sin = cos*tau;
+  }
+}
+
+fn update_local_rows() void {
+  @fmovs(aux_row_1_dsd, row_dsd);
+  row_dsd = @increment_dsd_offset(row_dsd, N_per_pe, f32);
+  @fmovs(aux_row_2_dsd, row_dsd);
+  // update bottom row
+  @fmuls(row_dsd, aux_row_1_dsd, sin);
+  @fmacs(row_dsd, row_dsd, aux_row_2_dsd, cos);
+  // update top row
+  row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe, f32);
+  @fmuls(row_dsd, aux_row_1_dsd, cos);
+  @fmacs(row_dsd, row_dsd, aux_row_2_dsd, -sin);
+}
+
+fn send_sin_cos_east() void {
+  if (!was_sin_cos_recvd_from_west and !is_right_col()) {
+    @fmovs(out_dsd_sin_cos_horizontally, sin);
+    @fmovs(out_dsd_sin_cos_horizontally, cos);
+  }
+}
+
+fn send_A() void {
+  @fmovs(out_dsd_A, row_dsd);
+  @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
+}
+
+fn set_rows_dsd_length(length: u16) void {
+  row_dsd = @set_dsd_length(row_dsd, length);
+  aux_row_1_dsd = @set_dsd_length(aux_row_1_dsd, length);
+  aux_row_2_dsd = @set_dsd_length(aux_row_2_dsd, length);
+}
+
+fn recv_A_from_south_and_update(own_element_id: i16) void {
+  @fmovs(aux_row_2_dsd, in_dsd_A);
+  send_A();
+  compute_sin_cos(A[own_element_id], aux_row_2[0]);
+  send_sin_cos_east();
+  @fmovs(aux_row_1_dsd, row_dsd);
+  @fmuls(row_dsd, aux_row_1_dsd, cos);
+  @fmacs(row_dsd, row_dsd, aux_row_2_dsd, -sin);
+}
+
+fn send_A_to_north_and_update(own_element_id: i16) void {
+  send_A();
+  @fmovs(aux_row_1_dsd, in_dsd_A);
+  compute_sin_cos(aux_row_1[0], A[own_element_id]);
+  send_sin_cos_east();
+  @fmovs(aux_row_2_dsd, row_dsd);
+  @fmuls(row_dsd, aux_row_1_dsd, sin);
+  @fmacs(row_dsd, row_dsd, aux_row_2_dsd, cos);
+}
+
+fn recv_sin_cos() void {
+  @fmovs(comptime &sin, in_dsd_sin_cos_horizontally);
+  @fmovs(comptime &cos, in_dsd_sin_cos_horizontally);
+}
+
+task send_control(zero: i16) void {
+  @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
+  if (!is_top_row()) {
+    @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
+  }
+}
+
+fn recv_sin_cos_and_update() void {
+  was_sin_cos_recvd_from_west = true;
+  row_dsd = @increment_dsd_offset(row_dsd, N_per_pe*(M_per_pe-2), f32);
+  // The PE receive the sine and cosine computed in a PE at left to make their lower 0s
+  for (@range(i16, N_per_pe - 1)) |col| {
+    for(@range(i16, 1, M_per_pe-col, 1)) |row| {
+      recv_sin_cos();
+      update_local_rows();
+      row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe, f32);
+    }
+    row_dsd = @increment_dsd_offset(row_dsd, N_per_pe*(M_per_pe-1-col), f32);
+  }
+  row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe*(M_per_pe-2), f32);
+  // if the diagonal PE of the row enter in diagonal_recv_update and this PE is right in the row 
+  if (@as(u16, count) == layout_mod.get_y_coord() and is_over_diagonal_pe()) {
+    for (@range(i16, N_per_pe)) |row| {
+      recv_sin_cos();
+      recv_A_from_south_and_update(0);
+      if(!is_top_row()) {
+        // the middle PEs need advance 2 position in the switch because in this case they are just communicating with the PE at south.
+        @mov32(out_dsd_A_control, comptime ctrl(false, opcode_switch_advance, @get_int(A_color)));
+      }
+      row_dsd = @increment_dsd_offset(row_dsd, N_per_pe, f32);
+    }
+    @unblock(send_control_task_id);
+    sys_mod.unblock_cmd_stream();
+    return;
+  }
+  else {
+    // the PE will receive the sine and cosine sended by make_upper_zeros
+    for (@range(i16, N_per_pe)) |column| {
+      if (!is_down_updated_row) {
+        recv_sin_cos();
+        recv_A_from_south_and_update(0);
+      }
+      recv_sin_cos();
+      send_A_to_north_and_update(0);
+      for (@range(i16, N_per_pe - column - 1)) |row| {
+        recv_sin_cos();
+        update_local_rows();
+        row_dsd = @increment_dsd_offset(row_dsd, N_per_pe, f32);
+      }
+      row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe*(N_per_pe - column - 1), f32);
+    }
+  }
+  count += 1;
+  if (@as(u16, count) == layout_mod.get_x_coord()) {
+    was_sin_cos_recvd_from_west = false;
+    count = 0;
+    make_lower_zeros();
+  }
+  else {
+    recv_sin_cos_and_update();
+  }
+}
+
+fn diagonal_recv_update() void {
+  if (!is_bottom_row()) {
+    for(@range(i16, N_per_pe)) |row| {
+      new_length = @as(u16, N_per_pe - row);
+      set_rows_dsd_length(new_length);
+      out_dsd_A = @set_dsd_length(out_dsd_A, new_length);
+      in_dsd_A = @set_dsd_length(in_dsd_A, new_length);
+      recv_A_from_south_and_update(row*N_per_pe + row);
+      if(!is_top_row()) {
+        // the middle PEs need advance 2 position in the switch because in this case they are just communicating with the PE at south.
+        @mov32(out_dsd_A_control, comptime ctrl(false, opcode_switch_advance, @get_int(A_color)));
+      }
+      row_dsd = @increment_dsd_offset(row_dsd, N_per_pe + 1, f32);
+    }
+  }
+  sys_mod.unblock_cmd_stream();
+}
+
+fn make_upper_zeros() void {
+  if (is_down_updated_row) {
+    send_A_to_north_and_update(count);
+    // make diagonal zeros
+    count += 1;
+    for (@range(i16, N_per_pe - count)) |row| {
+      new_length = @as(u16, N_per_pe - (count + row));
+      row_dsd = @increment_dsd_offset(row_dsd, 1, f32);
+      set_rows_dsd_length(new_length);
+      compute_sin_cos(A[(row)*N_per_pe + count + row], A[(row + 1)*N_per_pe + count + row]);
+      send_sin_cos_east();
+      update_local_rows();
+      row_dsd = @increment_dsd_offset(row_dsd, N_per_pe, f32);
+    }
+    new_length = @as(u16, N_per_pe - count);
+    set_rows_dsd_length(new_length);
+    out_dsd_A = @set_dsd_length(out_dsd_A, new_length);
+    in_dsd_A = @set_dsd_length(in_dsd_A, new_length);
+    row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe*(M_per_pe-count) - (N_per_pe - count - 1), f32);
+  }
+  else {
+    recv_A_from_south_and_update(count);
+  }
+  if (!is_bottom_row()) {
+    is_down_updated_row = !is_down_updated_row;
+  }
+  if (count == N_per_pe) {
+    sys_mod.unblock_cmd_stream();
+  }
+  else {
+    make_upper_zeros();
+  }
+}
+
+fn make_lower_zeros() void {
+  row_dsd = @increment_dsd_offset(row_dsd, N_per_pe*(M_per_pe-2), f32);
+  for (@range(i16, N_per_pe - 1)) |col| {
+    set_rows_dsd_length(@as(u16, N_per_pe-col));
+    for(@range(i16, 1, M_per_pe-col, 1)) |row| {
+      compute_sin_cos(A[(M_per_pe-(row+1))*N_per_pe + col], A[(M_per_pe-row)*N_per_pe + col]);
+      send_sin_cos_east();
+      update_local_rows();
+      row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe, f32);
+    }
+    row_dsd = @increment_dsd_offset(row_dsd, N_per_pe*(M_per_pe-1-col) + 1, f32);
+  }
+  row_dsd = @increment_dsd_offset(row_dsd, -N_per_pe*(M_per_pe-2) - (N_per_pe-1), f32);
+  set_rows_dsd_length(N_per_pe);
+  if (is_diagonal_pe()) {
+    diagonal_recv_update();
+  }
+  else {
+    make_upper_zeros();
+  }
+}
+
+task exit_task() void {
+  sys_mod.unblock_cmd_stream();
+}
+
+fn start() void {
+  @block(send_control_task_id);
+  is_down_updated_row = is_bottom_row();
+  was_sin_cos_recvd_from_west = false;
+  
+  if (is_left_col()) {
+    make_lower_zeros();
+  }
+  else {
+    recv_sin_cos_and_update();
+  }
+}
+
+comptime {
+  @bind_data_task(send_control, send_control_task_id);
+  @export_symbol(A_ptr, "A");
+  @export_symbol(start);
+  @rpc(@get_data_task_id(sys_mod.LAUNCH));
+}
