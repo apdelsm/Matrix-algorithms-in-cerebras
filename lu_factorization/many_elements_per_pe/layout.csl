@@ -25,6 +25,9 @@ layout {
   // PE coordinates are (column, row)
   @set_rectangle(grid_size, grid_size);
   const M_per_pe: u16 = @as(u16, M/@as(u32, grid_size));
+  
+  const switch_TX_S = .{.pos1 = .{ .tx = SOUTH}, .ring_mode = true, .current_switch_pos = 1};
+  const switch_TX_E = .{.pos1 = .{ .tx = EAST}, .ring_mode = true, .current_switch_pos = 1};
 
   for (@range(u16, grid_size)) |pe_x| {
     for (@range(u16, grid_size)) |pe_y| {
@@ -54,14 +57,18 @@ layout {
           @set_color_config(pe_x, pe_y, horizontal_elimination_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{EAST}}});
           @set_color_config(pe_x, pe_y, vertical_elimination_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{SOUTH}}});
         }
+        else if (pe_x == grid_size - 1) {
+          @set_color_config(pe_x, pe_y, horizontal_elimination_color,.{.routes = RX_RW_TX_RE_or_R});
+          @set_color_config(pe_x, pe_y, vertical_elimination_color, .{.routes = RX_RN_TX_RS_or_R});
+        }
         else {
           @set_color_config(pe_x, pe_y, horizontal_elimination_color,.{
             .routes = RX_RW_TX_RE_or_R,
-            .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_x*(M_per_pe*M_per_pe) + (M_per_pe-1)*(M_per_pe)/2, .max_counter = pe_x*(M_per_pe*M_per_pe), .init_counter = 1}
+            .switches = switch_TX_E
           });
           @set_color_config(pe_x, pe_y, vertical_elimination_color, .{
             .routes = RX_RN_TX_RS_or_R,
-            .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_y*(M_per_pe*M_per_pe) + (M_per_pe-1)*(M_per_pe)/2, .max_counter = pe_y*(M_per_pe*M_per_pe), .init_counter = 1}
+            .switches = switch_TX_S
             });
         }
       }
@@ -75,7 +82,7 @@ layout {
         else {
           @set_color_config(pe_x, pe_y, horizontal_elimination_color, .{
             .routes = RX_RW_TX_RE_or_R,
-            .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_x*(M_per_pe*M_per_pe) + (M_per_pe)*(M_per_pe), .max_counter = pe_x*(M_per_pe*M_per_pe), .init_counter = 1}
+            .switches = switch_TX_E
           });
         }
         @set_color_config(pe_x, pe_y, vertical_elimination_color, .{.routes = RX_N_TX_RS_or_R});
@@ -91,7 +98,7 @@ layout {
         else {
           @set_color_config(pe_x, pe_y, vertical_elimination_color, .{
             .routes = RX_RN_TX_RS_or_R,
-            .filter = .{.kind = .{.counter = true}, .count_data = true, .limit1 = pe_y*(M_per_pe*M_per_pe) + (M_per_pe)*(M_per_pe), .max_counter = pe_y*(M_per_pe*M_per_pe), .init_counter = 1}
+            .switches = switch_TX_S
           });
         }
       }

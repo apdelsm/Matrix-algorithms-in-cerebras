@@ -27,6 +27,12 @@ var A_ptr: [*]f32 = &A;
 var row_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> A[i]});
 var col_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{M_per_pe} -> A[i*@as(i16, N_per_pe)]});
 
+const opcode_switch_advance = 1;
+
+fn ctrl(ce_filter: bool, opcode: i16, color_id: u16) u32 {
+  return @as(u32, color_id) << 16 | @as(u32, opcode) << 22 | @as(u32, ce_filter) << 24;
+}
+
 fn is_right_col() bool {
   return(layout_mod.get_x_coord() == grid_size-1);
 }
@@ -59,6 +65,12 @@ var out_dsd_south_elimination = @get_dsd(fabout_dsd, .{
                       .fabric_color = vertical_elimination_color, .extent = N_per_pe,
                       .output_queue = @get_output_queue(0)
                     });
+var out_dsd_south_elimination_control = @get_dsd(fabout_dsd, .{
+                      .fabric_color = vertical_elimination_color, .extent = 1,
+                      .output_queue = @get_output_queue(0),
+                      .control = true
+                    });
+
 const out_dsd_south_division = @get_dsd(fabout_dsd, .{
                       .fabric_color = division_color, .extent = 1,
                       .output_queue = @get_output_queue(1)
@@ -73,7 +85,12 @@ var out_dsd_east_elimination = @get_dsd(fabout_dsd, .{
                       .fabric_color = horizontal_elimination_color, .extent = M_per_pe,
                       .output_queue = @get_output_queue(3)
                     });
-
+var out_dsd_east_elimination_control = @get_dsd(fabout_dsd, .{
+                      .fabric_color = horizontal_elimination_color, .extent = 1,
+                      .output_queue = @get_output_queue(3),
+                      .control = true
+                    });
+                    
 var in_dsd_north_elimination = @get_dsd(fabin_dsd, .{
                       .fabric_color = vertical_elimination_color, .extent = N_per_pe,
                       .input_queue = @get_input_queue(0)
@@ -133,19 +150,28 @@ task compute() void {
 }
 
 fn elimination_step() void {
-  // expect data from north and west
-  var recv_operations: u16;
-  if (is_over_diagonal_element()) {
-    recv_operations = layout_mod.get_y_coord() * M_per_pe;
+  for (@range(u16, if (is_over_diagonal_element()) layout_mod.get_y_coord() else layout_mod.get_x_coord())) |i| {
+    if (layout_mod.get_x_coord() == i + 1) {
+      @mov32(out_dsd_east_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(horizontal_elimination_color)));
+    }
+    if (layout_mod.get_y_coord() == i + 1) {
+      @mov32(out_dsd_south_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(vertical_elimination_color)));
+    }
+    for (@range(u16, M_per_pe)) |j| {
+      @fmovs(east_recvd_col_dsd, in_dsd_west_elimination);
+      @fmovs(north_recvd_row_dsd, in_dsd_north_elimination);
+      update_sub_matrix(N_per_pe, 0, &east_recvd_col, 1, 0, north_recvd_row_dsd, false);
+    }
+  }
+  if (is_diagonal_element() and !is_bottom_row()) {
+    @mov32(out_dsd_east_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(horizontal_elimination_color)));
+    @mov32(out_dsd_south_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(vertical_elimination_color)));
+  }
+  else if (is_over_diagonal_element()) {
+    @mov32(out_dsd_south_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(vertical_elimination_color)));
   }
   else {
-    recv_operations = layout_mod.get_x_coord() * N_per_pe;
-  }
-
-  for (@range(u16, recv_operations)) |op| {
-    @fmovs(east_recvd_col_dsd, in_dsd_west_elimination);
-    @fmovs(north_recvd_row_dsd, in_dsd_north_elimination);
-    update_sub_matrix(N_per_pe, 0, &east_recvd_col, 1, 0, north_recvd_row_dsd, false);
+    @mov32(out_dsd_east_elimination_control, comptime ctrl(true, opcode_switch_advance, @get_int(horizontal_elimination_color)));
   }
 
   if (is_diagonal_element()) {
