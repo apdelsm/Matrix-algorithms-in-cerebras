@@ -70,7 +70,6 @@ runner.launch('start', nonblock=False)
 result = np.zeros(shape=N*M, dtype=np.float32)
 runner.memcpy_d2h(result, A_symbol, 0, 0, grid_width, grid_height, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
 runner.stop()
-print(A)
 print('computing host expected...')
 M_per_pe = M//grid_height
 N_per_pe = N//grid_width
@@ -102,6 +101,4 @@ for grid_col in range(grid_width):
 print('end host computing.')
 
 result = inverse_reorganize_grid(result, grid_width, grid_height, N, M)
-print(result)
-print(A)
 print(f'Error: {np.linalg.norm(A-result)}')
