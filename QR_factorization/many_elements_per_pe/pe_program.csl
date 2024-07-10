@@ -82,6 +82,11 @@ const out_dsd_sin_cos_horizontally = @get_dsd(fabout_dsd, .{
                           .fabric_color = sin_cos_horizontal_color, .extent = 1,
                           .output_queue = @get_output_queue(2)
 });
+const out_dsd_sin_cos_horizontally_control = @get_dsd(fabout_dsd, .{
+                          .fabric_color = sin_cos_horizontal_color, .extent = 1,
+                          .output_queue = @get_output_queue(2),
+                          .control = true
+});
 const in_dsd_sin_cos_horizontally = @get_dsd(fabin_dsd, .{
                           .fabric_color = sin_cos_horizontal_color, .extent = 1,
                           .input_queue = @get_input_queue(2)
@@ -165,11 +170,14 @@ fn recv_sin_cos() void {
 task send_control(zero: i16) void {
   @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
   if (!is_top_row()) {
-    @mov32(out_dsd_A_control, comptime ctrl(true, opcode_switch_advance, @get_int(A_color)));
+    @mov32(out_dsd_A_control, comptime ctrl(false, opcode_switch_advance, @get_int(A_color)));
   }
 }
 
 fn recv_sin_cos_and_update() void {
+  if (layout_mod.get_x_coord() == @as(u16, count + 1)) {
+    @mov32(out_dsd_sin_cos_horizontally_control, comptime ctrl(true, opcode_switch_advance, @get_int(sin_cos_horizontal_color)));
+  }
   was_sin_cos_recvd_from_west = true;
   row_dsd = @increment_dsd_offset(row_dsd, N_per_pe*(M_per_pe-2), f32);
   // The PE receive the sine and cosine computed in a PE at left to make their lower 0s
@@ -216,6 +224,7 @@ fn recv_sin_cos_and_update() void {
   }
   count += 1;
   if (@as(u16, count) == layout_mod.get_x_coord()) {
+    @mov32(out_dsd_sin_cos_horizontally_control, comptime ctrl(true, opcode_switch_advance, @get_int(sin_cos_horizontal_color)));
     was_sin_cos_recvd_from_west = false;
     count = 0;
     make_lower_zeros();

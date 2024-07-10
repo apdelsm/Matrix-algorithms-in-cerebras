@@ -27,9 +27,6 @@ layout {
   const RX_RNS_TX_R = .{ .rx = .{RAMP, NORTH, SOUTH}, .tx = .{RAMP}};
   const RX_R_TX_E = .{ .rx = .{RAMP}, .tx = .{EAST}};
   const RX_RW_TX_RE = .{ .rx = .{RAMP, WEST}, .tx = .{RAMP, EAST}};
-  const RX_W_TX_RE = .{ .rx = .{WEST}, .tx = .{RAMP, EAST}};
-  const RX_W_TX_R = .{ .rx = .{WEST}, .tx = .{RAMP}};
-  const RX_N_TX_R = .{ .rx = .{NORTH}, .tx = .{RAMP}};
   const RX_RW_TX_R = .{ .rx = .{RAMP, NORTH, WEST}, .tx = .{RAMP}};
   // switches
   const switch_TX_N = .{.pos1 = .{ .tx = NORTH}, .ring_mode = true, .current_switch_pos = 1};
@@ -40,11 +37,6 @@ layout {
     .pos3 = .{ .tx = RAMP},
     .ring_mode = true,
     .current_switch_pos = 0
-  };
-  const switch_TX_SE = .{
-    .pos1 = .{ .tx = SOUTH},
-    .pos2 = .{ .tx = EAST},
-    .ring_mode = false
   };
 
   for (@range(u16, grid_width)) |pe_x| {
@@ -81,28 +73,13 @@ layout {
         @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_R_TX_E});
       }
       else if (pe_x == grid_width-1) {
-        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_R});
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_RW_TX_R});
       }
       else {
-        if (pe_y == 0) {
-          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{.routes = RX_W_TX_RE});
-        }
-        else if (pe_y == grid_height-1) {
-          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
-            .routes = RX_RW_TX_RE,
-            // A PE has pe_x PEs at left, each one send sine and cosine M_per_pe*M_per_pe times, the own PE send M_per_pe*M_per_pe sines and cosines 
-            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = 2*M_per_pe*M_per_pe*(pe_x + 1), .max_counter = 2*pe_x*M_per_pe*M_per_pe, .init_counter = 1}
-          });
-        }
-        else {
-          @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
-            .routes = RX_RW_TX_RE,
-            // A PE has pe_x PEs at left, each one send sine and cosine M_per_pe*M_per_pe times plus M_per_pe derived by the exchange with the PE at south
-            // the own PE will send M_per_pe*M_per_pe sines and cosines plus M_per_pe derived by the exchange with the PE at south, if is diagonal PE will send less,
-            // so the limit will be the bigger amount because we are not really interested in return the counter to 0
-            .filter = .{ .kind = .{.counter = true}, .count_data = true, .limit1 = (2*M_per_pe*pe_x + 2*M_per_pe)*(M_per_pe + 1), .max_counter = 2*M_per_pe*pe_x*(M_per_pe + 1), .init_counter = 1}
-          });
-        }
+        @set_color_config(pe_x, pe_y, sin_cos_horizontal_color, .{
+          .routes = RX_RW_TX_RE,
+          .switches = .{.pos1 = .{ .tx = EAST}, .ring_mode = true, .current_switch_pos = 1}
+        });
       }
     }
   }
