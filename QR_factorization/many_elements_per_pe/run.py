@@ -65,12 +65,10 @@ A_symbol = runner.get_id('A')
 runner.load()
 runner.run()
 
+print("computing in device...")
 runner.memcpy_h2d(A_symbol, reorganize_grid(A, grid_width, grid_height), 0, 0, grid_width, grid_height, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
 runner.launch('start', nonblock=False)
-result = np.zeros(shape=N*M, dtype=np.float32)
-runner.memcpy_d2h(result, A_symbol, 0, 0, grid_width, grid_height, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
-runner.stop()
-print('computing host expected...')
+print("computing expected...")
 M_per_pe = M//grid_height
 N_per_pe = N//grid_width
 for grid_col in range(grid_width):
@@ -98,7 +96,11 @@ for grid_col in range(grid_width):
         sin,cos = get_sin_cos(A[global_row][global_col], A[global_row + 1][global_col])
         A[global_row + 1], A[global_row] = (sin*A[global_row] + cos*A[global_row+1], cos*A[global_row] - sin*A[global_row+1])
 
-print('end host computing.')
+print("expected computed, waiting device...")
+result = np.zeros(shape=N*M, dtype=np.float32)
+runner.memcpy_d2h(result, A_symbol, 0, 0, grid_width, grid_height, elements_per_pe, streaming=False, data_type=MemcpyDataType.MEMCPY_32BIT, order=MemcpyOrder.ROW_MAJOR, nonblock=False)
+runner.stop()
+print("compute in device finished.")
 
 result = inverse_reorganize_grid(result, grid_width, grid_height, N, M)
 print(f'Error: {np.linalg.norm(A-result)}')
