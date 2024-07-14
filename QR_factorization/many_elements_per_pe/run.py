@@ -103,4 +103,4 @@ runner.stop()
 print("compute in device finished.")
 
 result = inverse_reorganize_grid(result, grid_width, grid_height, N, M)
-print(f'Error: {np.linalg.norm(A-result)}')
+print(f'Error: {np.linalg.norm(np.absolute(A)-np.absolute(result))}')
