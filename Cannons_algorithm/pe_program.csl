@@ -1,0 +1,119 @@
+param memcpy_params: comptime_struct;
+
+// Matrix dimensions
+param M_per_pe: i16;
+param N_per_pe: i16;
+param grid_height: u16;
+param grid_width: u16;
+
+// Colors
+param recv_A_color: color;
+param send_A_color: color;
+param recv_B_color: color;
+param send_B_color: color;
+
+const sys_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const layout_mod = @import_module("<layout>");
+
+var Matrix_1: [M_per_pe*N_per_pe] f32;
+var A_ptr: [*]f32 = &Matrix_1;
+var A_full_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{M_per_pe*N_per_pe} -> Matrix_1[i]});
+
+var Matrix_2: [M_per_pe*N_per_pe] f32;
+var B_ptr: [*]f32 = &Matrix_2;
+var B_row_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> Matrix_2[i]});
+var B_full_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{M_per_pe*N_per_pe} -> Matrix_2[i]});
+
+var Matrix_3: [M_per_pe*N_per_pe] f32;
+var Temp_ptr: [*]f32 = &Matrix_3;
+var Temp_full_dsd =  @get_dsd(mem1d_dsd, .{.tensor_access = |i|{M_per_pe*N_per_pe} -> Matrix_3[i]});
+
+var C = @zeros([M_per_pe*N_per_pe]f32);
+var C_ptr: [*]f32 = &C;
+var C_row_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{N_per_pe} -> C[i]});
+
+var out_dsd_A = @get_dsd(fabout_dsd, .{
+                          .fabric_color = send_A_color, .extent = M_per_pe*N_per_pe,
+                          .output_queue = @get_output_queue(0)
+});
+var in_dsd_A = @get_dsd(fabin_dsd, .{
+                          .fabric_color = recv_A_color, .extent = M_per_pe*N_per_pe,
+                          .input_queue = @get_input_queue(0)
+});
+
+var out_dsd_B = @get_dsd(fabout_dsd, .{
+                          .fabric_color = send_B_color, .extent = M_per_pe*N_per_pe,
+                          .output_queue = @get_output_queue(1)
+});
+var in_dsd_B = @get_dsd(fabin_dsd, .{
+                          .fabric_color = recv_B_color, .extent = M_per_pe*N_per_pe,
+                          .input_queue = @get_input_queue(1)
+});
+
+fn compute_C() void {
+  for (@range(i16, M_per_pe)) |row| {
+    for (@range(i16, N_per_pe)) |col| {
+      const a = A_ptr[row*N_per_pe + col];
+      @fmacs(C_row_dsd, C_row_dsd, B_row_dsd, a);
+      B_row_dsd = @increment_dsd_offset(B_row_dsd, N_per_pe, f32);
+    }
+    B_row_dsd = @increment_dsd_offset(B_row_dsd, -M_per_pe*N_per_pe, f32);
+    C_row_dsd = @increment_dsd_offset(C_row_dsd, N_per_pe, f32);
+  }
+  C_row_dsd = @increment_dsd_offset(C_row_dsd, -M_per_pe*N_per_pe, f32);
+}
+
+fn send_A() void {
+  @fmovs(out_dsd_A, A_full_dsd);
+}
+fn recv_A() void {
+  @fmovs(Temp_full_dsd, in_dsd_A);
+}
+
+fn send_B() void {
+  @fmovs(out_dsd_B, B_full_dsd);
+}
+fn recv_B() void {
+  @fmovs(Temp_full_dsd, in_dsd_B);
+}
+
+fn compute() void {
+  for (@range(i16, grid_width - 1)) |iter| {
+    compute_C();
+    if (layout_mod.get_x_coord() % 2 == 0) {
+      send_A();
+      recv_A();
+    } else {
+      recv_A();
+      send_A();
+    }
+    var aux_ptr = A_ptr;
+    A_ptr = Temp_ptr;
+    Temp_ptr = aux_ptr;
+    A_full_dsd = @set_dsd_base_addr(A_full_dsd, A_ptr);
+    Temp_full_dsd = @set_dsd_base_addr(Temp_full_dsd, Temp_ptr);
+    if (layout_mod.get_y_coord() % 2 == 0) {
+      send_B();
+      recv_B();
+    } else {
+      recv_B();
+      send_B();
+    }
+    aux_ptr = B_ptr;
+    B_ptr = Temp_ptr;
+    Temp_ptr = aux_ptr;
+    B_full_dsd = @set_dsd_base_addr(B_full_dsd, B_ptr);
+    B_row_dsd = @set_dsd_base_addr(B_row_dsd, B_ptr);
+    Temp_full_dsd = @set_dsd_base_addr(Temp_full_dsd, Temp_ptr);
+  }
+  compute_C();
+  sys_mod.unblock_cmd_stream();
+}
+
+comptime {
+  @export_symbol(A_ptr, "A");
+  @export_symbol(B_ptr, "B");
+  @export_symbol(C_ptr, "C");
+  @export_symbol(compute);
+  @rpc(@get_data_task_id(sys_mod.LAUNCH));
+}

@@ -1,0 +1,82 @@
+// total matrix dimensions
+param M: u32;
+param grid_size: u16;
+
+// Colors
+const A_color_1: color = @get_color(0);
+const A_color_2: color = @get_color(1);
+const A_color_3: color = @get_color(2);
+const B_color_1: color = @get_color(3);
+const B_color_2: color = @get_color(4);
+const B_color_3: color = @get_color(5);
+const LAUNCH: color = @get_color(8); // Color used by memcpy for kernel launch
+
+
+// Task IDs
+
+const memcpy = @import_module("<memcpy/get_params>", .{
+  .width = grid_size,
+  .height = grid_size,
+  .LAUNCH = LAUNCH
+});
+
+layout {
+  // PE coordinates are (column, row)
+  @set_rectangle(grid_size, grid_size);
+  const M_per_pe: u16 = @as(u16, M/@as(u32, grid_size));
+
+  for (@range(u16, grid_size)) |pe_x| {
+    for (@range(u16, grid_size)) |pe_y| {
+      const send_A_color = if (pe_x == 0) A_color_1 else if (pe_x % 2 == 0) A_color_2 else A_color_3;
+      const recv_A_color = if (pe_x == grid_size - 1) A_color_1 else if (pe_x % 2 == 0) A_color_3 else A_color_2;
+      const send_B_color = if (pe_y == 0) B_color_1 else if (pe_y % 2 == 0) B_color_2 else B_color_3;
+      const recv_B_color = if (pe_y == grid_size - 1) B_color_1 else if (pe_y % 2 == 0) B_color_3 else B_color_2;
+
+      @set_tile_code(pe_x, pe_y, "pe_program.csl", .{
+        .memcpy_params = memcpy.get_params(pe_x),
+        .M_per_pe = M_per_pe,
+        .N_per_pe = M_per_pe,
+        .grid_width = grid_size,
+        .grid_height = grid_size,
+        .recv_A_color = recv_A_color,
+        .send_A_color = send_A_color,
+        .recv_B_color = recv_B_color,
+        .send_B_color = send_B_color
+      });
+
+      if (pe_x == 0) {
+        @set_color_config(pe_x, pe_y, send_A_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{EAST}}});
+        @set_color_config(pe_x, pe_y, recv_A_color, .{.routes = .{ .rx = .{EAST}, .tx = .{RAMP}}});
+      }
+      else if (pe_x == grid_size - 1) {
+        @set_color_config(pe_x, pe_y, send_A_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{WEST}}});
+        @set_color_config(pe_x, pe_y, recv_A_color, .{.routes = .{ .rx = .{WEST}, .tx = .{RAMP}}});
+      }
+      else {
+        @set_color_config(pe_x, pe_y, send_A_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{WEST}}});
+        @set_color_config(pe_x, pe_y, recv_A_color, .{.routes = .{ .rx = .{EAST}, .tx = .{RAMP}}});
+        @set_color_config(pe_x, pe_y, A_color_1, .{.routes = .{ .rx = .{WEST}, .tx = .{EAST}}});
+      }
+
+      if (pe_y == 0) {
+        @set_color_config(pe_x, pe_y, send_B_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{SOUTH}}});
+        @set_color_config(pe_x, pe_y, recv_B_color, .{.routes = .{ .rx = .{SOUTH}, .tx = .{RAMP}}});
+      }
+      else if (pe_y == grid_size - 1) {
+        @set_color_config(pe_x, pe_y, send_B_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{NORTH}}});
+        @set_color_config(pe_x, pe_y, recv_B_color, .{.routes = .{ .rx = .{NORTH}, .tx = .{RAMP}}});
+      }
+      else {
+        @set_color_config(pe_x, pe_y, send_B_color, .{.routes = .{ .rx = .{RAMP}, .tx = .{NORTH}}});
+        @set_color_config(pe_x, pe_y, recv_B_color, .{.routes = .{ .rx = .{SOUTH}, .tx = .{RAMP}}});
+        @set_color_config(pe_x, pe_y, B_color_1, .{.routes = .{ .rx = .{NORTH}, .tx = .{SOUTH}}});
+      }
+    }
+  }
+
+  // export symbol names
+  @export_name("A", [*]f32, true);
+  @export_name("B", [*]f32, true);
+  @export_name("C", [*]f32, true);
+  @export_name("compute", fn()void);
+}
